@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-Description: (SO0050-bucket) Media2Cloud - create and configure ingest, proxy, and web buckets
+Description: Extended (SO0050-bucket) Media2Cloud - create and configure ingest, proxy, and web buckets, and Lambda
 
 #
 # Mappings to store fixed value of the solution
@@ -8,7 +8,7 @@ Description: (SO0050-bucket) Media2Cloud - create and configure ingest, proxy, a
 Mappings:
     Solution:
         Package:
-            S3Event: "%PKG_S3EVENT%"
+            S3Event: "m2c-s3event_v2.0.0.zip"
     Function:
         Handler:
             OnObjectCreated: index.onS3Event
@@ -46,8 +46,8 @@ Parameters:
         Description: send ananymous usage data
         Default: "No"
         AllowedValues:
-          - "No"
-          - "Yes"
+            - "No"
+            - "Yes"
     S3Bucket:
         Type: String
         Description: solution bucket
@@ -77,91 +77,194 @@ Parameters:
     CoreLibLayer:
         Type: String
         Description: Core Library layer
+    CodeS3BucketName:
+        Type: String
+        Description: Name of S3 bucket where Lambda code stored
+    CodeS3Key:
+        Type: String
+        Description: Name of S3 key for lambda code. e.g. lambda.zip
+    Media2CloudEndpoint:
+        Type: String
+        Description: Media2CloudEndpoint. Created in main stack
+    IngestBucketKeyPrefix:
+        Type: String
+        Default: ''
+        Description: IngestBucket Key Prefix for trigger Lambda
+        AllowedPattern: '^[0-9a-zA-Z-/]*$'
+    IngestBucketKeySuffix:
+        Type: String
+        Description: IngestBucket Key Sufix for trigger Lambda. e.g. .mp4
+        Default: ".json,.mp4,.mov,.wmv,.mxf,.ts,.mpg,.mpeg"
 
 Metadata:
-  cfn-lint:
-    config:
-        ignore_checks:
-            # ignore CustomResourceArn not used
-            - W2001
-    AWS::CloudFormation::Interface:
-        ParameterGroups:
-            -
-                Label:
-                    default: "Solution Configuration"
-                Parameters:
-                    - SolutionId
-                    - RootStackName
-                    - SolutionUuid
-                    - AnonymousUsage
-                    - S3Bucket
-                    - KeyPrefix
-            -
-                Label:
-                    default: "S3 Configuration"
-                Parameters:
-                    - BucketPrefix
-            -
-                Label:
-                    default: "Other resources"
-                Parameters:
-                    - CustomResourceArn
-                    - IotTopic
-                    - SNSTopicArn
-                    - IotHost
-                    - IotTopic
-                    - AwsSdkLayer
-                    - CoreLibLayer
-        ParameterLabels:
-            BucketPrefix:
-                default: "Bucket Prefix"
-            CustomResourceArn:
-                default: "Custom Resource Arn"
-            SolutionId:
-                default: "Solution Id"
-            RootStackName:
-                default: "Top Stack Name"
-            SolutionUuid:
-                default: "UUID"
-            AnonymousUsage:
-                default: "Anonymous usage"
-            S3Bucket:
-                default: "Solution Bucket"
-            KeyPrefix:
-                default: "Solution KeyPrefix"
-            SNSTopicArn:
-                default: "SNS Topic"
-            IotHost:
-                default: "IoT Host"
-            IotTopic:
-                default: "IoT Topic"
-            AwsSdkLayer:
-                default: "AWS SDK Layer"
-            CoreLibLayer:
-                default: "Core Library Layer"
+    cfn-lint:
+        config:
+            ignore_checks:
+                # ignore CustomResourceArn not used
+                - W2001
+        AWS::CloudFormation::Interface:
+            ParameterGroups:
+                -
+                    Label:
+                        default: "Solution Configuration"
+                    Parameters:
+                        - SolutionId
+                        - RootStackName
+                        - SolutionUuid
+                        - AnonymousUsage
+                        - S3Bucket
+                        - KeyPrefix
+                -
+                    Label:
+                        default: "S3 Configuration"
+                    Parameters:
+                        - BucketPrefix
+                -
+                    Label:
+                        default: "Other resources"
+                    Parameters:
+                        - CustomResourceArn
+                        - IotTopic
+                        - SNSTopicArn
+                        - IotHost
+                        - IotTopic
+                        - AwsSdkLayer
+                        - CoreLibLayer
+            ParameterLabels:
+                BucketPrefix:
+                    default: "Bucket Prefix"
+                CustomResourceArn:
+                    default: "Custom Resource Arn"
+                SolutionId:
+                    default: "Solution Id"
+                RootStackName:
+                    default: "Top Stack Name"
+                SolutionUuid:
+                    default: "UUID"
+                AnonymousUsage:
+                    default: "Anonymous usage"
+                S3Bucket:
+                    default: "Solution Bucket"
+                KeyPrefix:
+                    default: "Solution KeyPrefix"
+                SNSTopicArn:
+                    default: "SNS Topic"
+                IotHost:
+                    default: "IoT Host"
+                IotTopic:
+                    default: "IoT Topic"
+                AwsSdkLayer:
+                    default: "AWS SDK Layer"
+                CoreLibLayer:
+                    default: "Core Library Layer"
 
 Conditions:
     CreateIngestBucket: !Equals [
         !FindInMap [
-            "UserDefined",
-            "Bucket",
-            "Ingest"
+                "UserDefined",
+                "Bucket",
+                "Ingest"
         ],
-        ""
+            ""
     ]
     CreateProxyBucket: !Equals [
         !FindInMap [
-            "UserDefined",
-            "Bucket",
-            "Proxy"
+                "UserDefined",
+                "Bucket",
+                "Proxy"
         ],
-        ""
+            ""
     ]
 
 Resources:
     #
     # assets automatically transition to Glacier after X days
     #
+    TriggerFunctionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    -   Effect: 'Allow'
+                        Principal:
+                            Service:
+                                - 'lambda.amazonaws.com'
+                        Action:
+                            - 'sts:AssumeRole'
+            Path: "/"
+            Description: 'This IAM role used for Lambda media2cloud'
+            Policies:
+                -   PolicyName: !Sub "${SolutionId}-${RootStackName}-s3-notification-trigger"
+                    PolicyDocument:
+                        Version: '2012-10-17'
+                        Statement:
+                            -   Effect: 'Allow'
+                                Action:
+                                    - 'logs:CreateLogGroup'
+                                    - 'logs:CreateLogStream'
+                                    - 'logs:PutLogEvents'
+                                Resource: '*'
+                            -   Effect: 'Allow'
+                                Action:
+                                    - 'execute-api:Invoke'
+                                    - 'execute-api:ManageConnections'
+                                Resource: 'arn:aws:execute-api:*:*:*'
+                            -   Effect: 'Allow'
+                                Action:
+                                    - 'sns:GetTopicAttributes'
+                                    - 'sns:List*'
+                                Resource: '*'
+                            -   Effect: 'Allow'
+                                Action:
+                                    - 'states:*'
+                                Resource: '*'
+                            -   Effect: 'Allow'
+                                Action:
+                                    - 's3:GetBucketNotification'
+                                    - 's3:PutBucketNotification'
+                                Resource:
+                                    - !Sub "arn:aws:s3:::${BucketPrefix}-ingest"
+                                    - !Sub "arn:aws:s3:::${BucketPrefix}-ingest/*"
+    TriggerFunction:
+        Type: AWS::Lambda::Function
+        Properties:
+            FunctionName: !Sub "${SolutionId}-${RootStackName}-trigger"
+            Description: 'This Function receive S3 and SNS info and call API. Custom function.'
+            Runtime: nodejs10.x
+            MemorySize: 128
+            Timeout: 60
+            Role: !GetAtt TriggerFunctionRole.Arn
+            Handler: index.handler
+            Environment:
+                Variables:
+                    ENDPOINT: !Ref Media2CloudEndpoint
+            Code:
+                S3Bucket: !Ref CodeS3BucketName
+                S3Key: !Ref CodeS3Key
+    TriggerInvoke:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !GetAtt TriggerFunction.Arn
+            Action: 'lambda:InvokeFunction'
+            Principal: 's3.amazonaws.com'
+            SourceAccount: !Ref AWS::AccountId
+            SourceArn: !Sub "arn:aws:s3:::${BucketPrefix}-ingest"
+    TriggerInvokeSNS:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !GetAtt TriggerFunction.Arn
+            Action: 'lambda:InvokeFunction'
+            Principal: 'sns.amazonaws.com'
+            SourceAccount: !Ref AWS::AccountId
+            SourceArn: !Ref SNSTopicArn
+    SubscriptionForAnalysis:
+        Type: AWS::SNS::Subscription
+        Properties:
+            Endpoint: !GetAtt TriggerFunction.Arn
+            Protocol: lambda
+            Region: !Ref AWS::Region
+            TopicArn: !Ref SNSTopicArn
     IngestBucket:
         Condition: CreateIngestBucket
         Type: AWS::S3::Bucket
@@ -171,12 +274,12 @@ Resources:
             BucketEncryption:
                 ServerSideEncryptionConfiguration:
                     -
-                      ServerSideEncryptionByDefault:
-                          SSEAlgorithm: AES256
+                        ServerSideEncryptionByDefault:
+                            SSEAlgorithm: AES256
             AccessControl: LogDeliveryWrite
             LoggingConfiguration:
-              DestinationBucketName: !Sub "${BucketPrefix}-ingest"
-              LogFilePrefix: "access_log/"
+                DestinationBucketName: !Sub "${BucketPrefix}-ingest"
+                LogFilePrefix: "access_log/"
             CorsConfiguration:
                 CorsRules:
                     -
@@ -210,29 +313,29 @@ Resources:
                         TagFilters:
                             -
                                 Key: !FindInMap [
-                                    "S3",
-                                    "Lifecycle",
-                                    "TageName"
+                                        "S3",
+                                        "Lifecycle",
+                                        "TageName"
                                 ]
                                 Value: !FindInMap [
-                                    "S3",
-                                    "Lifecycle",
-                                    "TagValue"
+                                        "S3",
+                                        "Lifecycle",
+                                        "TagValue"
                                 ]
                         Transitions:
                             -
                                 StorageClass: !FindInMap [
-                                    "S3",
-                                    "Lifecycle",
-                                    "StorageClass"
+                                        "S3",
+                                        "Lifecycle",
+                                        "StorageClass"
                                 ]
                                 TransitionInDays: 0
                         NoncurrentVersionTransitions:
                             -
                                 StorageClass: !FindInMap [
-                                    "S3",
-                                    "Lifecycle",
-                                    "StorageClass"
+                                        "S3",
+                                        "Lifecycle",
+                                        "StorageClass"
                                 ]
                                 TransitionInDays: 0
                     -
@@ -247,6 +350,17 @@ Resources:
                     Value: !Ref SolutionId
             VersioningConfiguration:
                 Status: Enabled
+            NotificationConfiguration:
+                LambdaConfigurations:
+                    -   Event: 's3:ObjectCreated:*'
+                        Function: !GetAtt TriggerFunction.Arn
+                        Filter:
+                            S3Key:
+                                Rules:
+                                    -   Name: prefix
+                                        Value: !Ref IngestBucketKeyPrefix
+                                    -   Name: suffix
+                                        Value: !Ref IngestBucketKeySuffix
 
     IngestBucketPolicy:
         Condition: CreateIngestBucket
@@ -263,6 +377,13 @@ Resources:
                         Condition:
                             Bool:
                                 "aws:SecureTransport": false
+                    -   Action:
+                            - 's3:GetBucketNotification'
+                            - "s3:PutBucketNotification"
+                        Effect: "Allow"
+                        Resource: !Sub "arn:aws:s3:::${BucketPrefix}-ingest"
+                        Principal:
+                            AWS: !GetAtt TriggerFunctionRole.Arn
 
     #
     # proxy bucket to store proxies and media analysis results
@@ -276,12 +397,12 @@ Resources:
             BucketEncryption:
                 ServerSideEncryptionConfiguration:
                     -
-                      ServerSideEncryptionByDefault:
-                          SSEAlgorithm: AES256
+                        ServerSideEncryptionByDefault:
+                            SSEAlgorithm: AES256
             AccessControl: LogDeliveryWrite
             LoggingConfiguration:
-              DestinationBucketName: !Sub "${BucketPrefix}-proxy"
-              LogFilePrefix: "access_log/"
+                DestinationBucketName: !Sub "${BucketPrefix}-proxy"
+                LogFilePrefix: "access_log/"
             CorsConfiguration:
                 CorsRules:
                     -
@@ -358,8 +479,8 @@ Resources:
             BucketEncryption:
                 ServerSideEncryptionConfiguration:
                     -
-                      ServerSideEncryptionByDefault:
-                          SSEAlgorithm: AES256
+                        ServerSideEncryptionByDefault:
+                            SSEAlgorithm: AES256
             AccessControl: LogDeliveryWrite
             LoggingConfiguration:
                 DestinationBucketName: !Sub "${BucketPrefix}-web"
@@ -455,62 +576,62 @@ Resources:
                     PolicyDocument:
                         Version: "2012-10-17"
                         Statement:
-                        ## S3
-                        -
-                            Effect: "Allow"
-                            Action:
-                                - "s3:GetObject"
-                                - "s3:PutObject"
-                            Resource: !Sub [
-                                "arn:aws:s3:::${x0}/*", {
-                                    x0: !If [
-                                        CreateIngestBucket,
-                                        !FindInMap [
-                                            "UserDefined",
-                                            "Bucket",
-                                            "Ingest"
-                                        ],
-                                        !Sub "${BucketPrefix}-ingest"
-                                    ]
-                                }
-                            ]
+                            ## S3
+                            -
+                                Effect: "Allow"
+                                Action:
+                                    - "s3:GetObject"
+                                    - "s3:PutObject"
+                                Resource: !Sub [
+                                        "arn:aws:s3:::${x0}/*", {
+                                        x0: !If [
+                                                CreateIngestBucket,
+                                            !FindInMap [
+                                                    "UserDefined",
+                                                    "Bucket",
+                                                    "Ingest"
+                                            ],
+                                            !Sub "${BucketPrefix}-ingest"
+                                        ]
+                                    }
+                                ]
 
-                        ## CloudWatch Logs
-                        -
-                            Effect: "Allow"
-                            Action:
-                                - "logs:CreateLogGroup"
-                                - "logs:CreateLogStream"
-                                - "logs:PutLogEvents"
-                            Resource:
-                                - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+                            ## CloudWatch Logs
+                            -
+                                Effect: "Allow"
+                                Action:
+                                    - "logs:CreateLogGroup"
+                                    - "logs:CreateLogStream"
+                                    - "logs:PutLogEvents"
+                                Resource:
+                                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
 
-                        ## API Gateway
-                        -
-                            Effect: "Allow"
-                            Action:
-                                - "execute-api:Invoke"
-                            # This wildcard is present because there is a circular dependency between
-                            # Step Functions resource and API Gateway resource creation
-                            Resource:
-                                - !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*/*/*"
+                            ## API Gateway
+                            -
+                                Effect: "Allow"
+                                Action:
+                                    - "execute-api:Invoke"
+                                # This wildcard is present because there is a circular dependency between
+                                # Step Functions resource and API Gateway resource creation
+                                Resource:
+                                    - !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*/*/*"
 
-                        ## IoT
-                        -
-                            Effect: "Allow"
-                            Action:
-                                - "iot:Publish"
-                            Resource:
-                                - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}"
+                            ## IoT
+                            -
+                                Effect: "Allow"
+                                Action:
+                                    - "iot:Publish"
+                                Resource:
+                                    - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/${IotTopic}"
 
-                        ## Step Function
-                        -
-                            Effect: "Allow"
-                            Action:
-                                - "states:DescribeStateMachine"
-                                - "states:StartExecution"                            
-                            Resource:
-                                - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${SolutionId}-${RootStackName}-*"
+                            ## Step Function
+                            -
+                                Effect: "Allow"
+                                Action:
+                                    - "states:DescribeStateMachine"
+                                    - "states:StartExecution"
+                                Resource:
+                                    - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${SolutionId}-${RootStackName}-*"
 
     #
     # (Bucket event) lambda function on s3 trigger
@@ -531,11 +652,11 @@ Resources:
             Code:
                 S3Bucket: !Ref S3Bucket
                 S3Key: !Sub [
-                    "${KeyPrefix}/${x0}", {
+                        "${KeyPrefix}/${x0}", {
                         x0: !FindInMap [
-                            "Solution",
-                            "Package",
-                            "S3Event"
+                                "Solution",
+                                "Package",
+                                "S3Event"
                         ]
                     }
                 ]
@@ -560,13 +681,13 @@ Resources:
             Principal: s3.amazonaws.com
             SourceAccount: !Ref AWS::AccountId
             SourceArn: !Sub [
-                "arn:aws:s3:::${x0}", {
+                    "arn:aws:s3:::${x0}", {
                     x0: !If [
-                        CreateIngestBucket,
+                            CreateIngestBucket,
                         !FindInMap [
-                            "UserDefined",
-                            "Bucket",
-                            "Ingest"
+                                "UserDefined",
+                                "Bucket",
+                                "Ingest"
                         ],
                         !Sub "${BucketPrefix}-ingest"
                     ]
@@ -593,24 +714,24 @@ Resources:
 Outputs:
     IngestBucket:
         Value: !If [
-            CreateIngestBucket,
+                CreateIngestBucket,
             !Ref IngestBucket,
             !FindInMap [
-                "UserDefined",
-                "Bucket",
-                "Ingest"
+                    "UserDefined",
+                    "Bucket",
+                    "Ingest"
             ]
         ]
         Description: Bucket Name (Ingest)
 
     ProxyBucket:
         Value: !If [
-            CreateProxyBucket,
+                CreateProxyBucket,
             !Ref ProxyBucket,
             !FindInMap [
-                "UserDefined",
-                "Bucket",
-                "Proxy"
+                    "UserDefined",
+                    "Bucket",
+                    "Proxy"
             ]
         ]
         Description: Bucket Name (Proxy)
